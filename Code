@@ -1,1 +1,85 @@
 
+
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier as RF, GradientBoostingClassifier as GB
+from sklearn.metrics import accuracy_score as acc, f1_score as f1, roc_auc_score as auc
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression as LR
+import pandas as pd, numpy as np, io, warnings
+warnings.filterwarnings('ignore')
+from google.colab import files
+
+
+
+
+
+up  = files.upload()
+csv = next(iter(up))
+df  = pd.read_csv(io.BytesIO(up[csv]))
+
+
+
+
+
+# preprocessing
+
+
+y   = df['loan_status']
+X   = df.drop(columns=['loan_status'])
+num = X.select_dtypes(include=['int64', 'float64']).columns
+cat = X.select_dtypes(include='object').columns
+X[num] = X[num].fillna(X[num].median())
+X[cat] = X[cat].fillna('missing')
+X[num] = StandardScaler().fit_transform(X[num])
+X      = pd.get_dummies(X, columns=cat, drop_first=True)
+
+# spliting data
+Xtr, Xts, ytr, yts = train_test_split(X, y, test_size=.25, stratify=y, random_state=45)
+
+# training
+mdl = {
+    'logistic regression' : LR(max_iter=1100, class_weight='balanced'),
+    'random forest'       : RF(n_estimators=350, class_weight='balanced', random_state=45),
+    'gradient boosting'   : GB(random_state=45)
+}
+
+
+
+
+
+# training + evaluation
+sc = {}
+for name, model in mdl.items():
+    model.fit(Xtr, ytr)
+    preds = model.predict(Xts)
+    prob  = model.predict_proba(Xts)[:, 1] if hasattr(model, 'predict_proba') else preds
+    sc[name] = (f1(yts, preds), acc(yts, preds), auc(yts, prob))
+    print(f'{name}  f1 score={sc[name][0]:.4f}  accuracy={sc[name][1]:.4f}  roc auc={sc[name][2]:.4f}')
+
+# best model by f1
+best_name = max(sc, key=lambda k: sc[k][0])
+best_model = mdl[best_name]
+print(f'\nbest model is {best_name}')
+
+# top features
+print('\ntop features:')
+if hasattr(best_model, 'feature_importances_'):
+    imp = pd.Series(best_model.feature_importances_, index=X.columns)
+    print(imp.sort_values(ascending=False).head(15))
+else:
+    coef = pd.Series(best_model.coef_[0], index=X.columns)
+    print(coef.abs().sort_values(ascending=False).head(15))
+
+
+
+
+#fairness 
+fd        = df[['person_gender', 'person_age', 'loan_status']].copy()
+fd['age'] = pd.cut(fd['person_age'], [0, 30, 50, 100], labels=['≤30', '31-50', '>50'])
+
+def rate(col):
+    return fd.groupby(col)['loan_status'].agg(['mean', 'count']).rename(columns={'mean': 'rate', 'count': 'n'})
+
+print('\napproval rate by gender:\n', rate('person_gender'))
+print('\napproval rate by age group:\n', rate('age'))
+
